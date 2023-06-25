@@ -4,6 +4,8 @@ namespace Leaf\Controllers;
 
 use AllowDynamicProperties;
 use Exception;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Support\Facades\Cache;
 use Leaf\Helpers\ApiException;
 
 use Leaf\Helpers\Validator;
@@ -27,33 +29,54 @@ class APIController
     /**
      * @var AuthService
      */
-    private $authentication_service;
+    private AuthService $authentication_service;
     private $session;
 
     public function __construct()
     {
         // load repositories
-        $repositories = scandir(__DIR__ . "/../Repositories");
+        // Check if caching is enabled (not in dev mode)
+        $useCaching = _env('APP_ENV')== 'production';
+
+        // Load repositories from cache or scan the directory
+        $repositories = $useCaching ? $this->loadRepositoriesFromCache() : $this->scanRepositoriesDirectory();
+
+        // Bind repository methods to this class
         foreach ($repositories as $repository) {
-            if ($repository != "." && $repository != "..") {
-                $file = __DIR__ . "/../Repositories/" . $repository;
-                if (file_exists($file)) {
-                    //bind repository methods to this class
-                    $repository_name = "Leaf\\Repositories\\" . str_replace(".php", "", $repository);
-                    $repo = new $repository_name();
-                    foreach (get_class_methods($repo) as $method) {
-                        //bind as class method
-                        $this->{$method} =  function () use ($repo, $method) {
-                            return call_user_func_array([$repo, $method], func_get_args());
-                        };
-                    }
-                }
+            $repositoryName = "Leaf\\Repositories\\" . str_replace(".php", "", $repository);
+            $repo = new $repositoryName();
+
+            foreach (get_class_methods($repo) as $method) {
+                // Bind as class method
+                $this->{$method} = function () use ($repo, $method) {
+                    return call_user_func_array([$repo, $method], func_get_args());
+                };
             }
         }
         return $this;
     }
 
-    public function processor()
+    private function scanRepositoriesDirectory(): false|array
+    {
+        $repositories = scandir(__DIR__ . "/../Repositories");
+        return array_filter($repositories, function ($repository) {
+            return $repository != "." && $repository != ".." && str_ends_with($repository, ".php");
+        });
+    }
+
+    private function loadRepositoriesFromCache()
+    {
+        $repositories = Cache::get('repositories');
+
+        if (!$repositories) {
+            $repositories = $this->scanRepositoriesDirectory();
+            Cache::put('repositories', $repositories, now()->addDay());
+        }
+
+        return $repositories;
+    }
+
+    public function processor(): void
     {
         header("Content-Type: application/json; charset=UTF-8");
         header("Access-Control-Allow-Methods: OPTIONS,GET,POST,PUT,DELETE");
@@ -95,7 +118,20 @@ class APIController
             throw new Exception("User is inactive. Log In Denied");
         }
 
-        return $this->respondWith(json_encode(['status' => '01', "access_token" => $token, "refresh_token"=>$token, "expires" => $this->ttl]), 200);
+        return $this->respondWith(json_encode(['status' => '01', "access_token" => $token, "refresh_token" => $token, "expires" => $this->ttl]), 200);
+    }
+    //refresh token
+    /**
+     * @throws Exception
+     */
+    public function refresh(): array
+    {
+        Validator::make($this->requestData, [
+            'refresh_token' => 'required',
+            'client_id' => 'required',
+        ]);
+        $token = $this->refreshJWT($this->requestData);
+        return ['status' => '01', "access_token" => $token, "refresh_token" => $token, "expires" => $this->ttl];
     }
     //register
 
@@ -104,11 +140,11 @@ class APIController
      */
     public function register(): array
     {
-        return $this->respondWith(json_encode(['status' => '01', "message" => "Registration Successful","data"=>$this->authentication_service->register($this->requestData)->toArray()]), 200);
+        return $this->respondWith(json_encode(['status' => '01', "message" => "Registration Successful", "data" => $this->authentication_service->register($this->requestData)->toArray()]), 200);
     }
 
 
-    private function processRequest()
+    private function processRequest(): void
     {
         switch ($this->requestMethod) {
             case 'POST' || 'OPTIONS' || 'GET':
@@ -118,10 +154,11 @@ class APIController
                     }
                     //check if resource exists, as a method in this class or in the loaded repositories
                     if (!method_exists($this, $this->requestData->resource) && !property_exists($this, $this->requestData->resource)) {
-                        throw new Exception("The required resource (" . $this->requestData->resource . ") is unavailable");
+                        throw new Exception("The requested resource (" . $this->requestData->resource . ") is unavailable");
                     }
+                    $unguarded = ['login', 'register'];
 
-                    if ($this->requestData->resource == "login" || $this->requestData->resource == "register") {//Validate token if request not log in
+                    if (in_array($this->requestData->resource,$unguarded)) {//Validate token if request not log in
                         $response = call_user_func(array($this, $this->requestData->resource));
                     } elseif ($this->validate_request()) {//Will Throw Exception
                         if (method_exists($this, $this->requestData->resource)) {
@@ -147,7 +184,10 @@ class APIController
 
                 } catch (ApiException $exception) {
                     $response = $this->unprocessableEntityResponse($exception->errors());
-                } catch (Exception $exception) {
+                }catch (ModelNotFoundException){
+                    $response = $this->unprocessableEntityResponse("Resource not found");
+                }
+                catch (Exception $exception) {
                     $response = $this->unprocessableEntityResponse($exception->getMessage());
                 }
                 break;
@@ -180,13 +220,10 @@ class APIController
 
     private function respondWith($json, int $status): array
     {
-        switch ($status) {
-            case 200:
-                $response['status_code_header'] = 'HTTP/1.1 200 OK';
-                break;
-            default:
-                $response['status_code_header'] = 'HTTP/1.1 404 Not Found';
-        }
+        $response['status_code_header'] = match ($status) {
+            200 => 'HTTP/1.1 200 OK',
+            default => 'HTTP/1.1 404 Not Found',
+        };
         $response['body'] = $json;
         return $response;
     }
@@ -213,7 +250,6 @@ class APIController
      */
     public function validate_request(): bool
     {
-        $bearer = "";
         try {
             $bearer = $_SERVER["HTTP_AUTHORIZATION"];
             if (empty($bearer)) {
@@ -224,7 +260,7 @@ class APIController
             if (empty($bearer)) {
                 $bearer = $this->requestData->token;
             }
-        } catch (Exception $exception) {
+        } catch (Exception) {
             throw new ApiException("Access denied. Invalid or expired token!");
         }
 
@@ -263,11 +299,15 @@ class APIController
             return false;
         } else {
             // retrieve user
-            $jwt = JWT::findOrFail($payload->login_credential);
-            $user = User::findOrFail($payload->user);
+            try{
+                $jwt = JWT::findOrFail($payload->login_credential);
+                $user = User::findOrFail($payload->user);
+            }catch (Exception) {
+                throw new ApiException("Access denied. Invalid or expired token!");
+            }
             $auth = $this->authentication_service->merchant_validation($user, $jwt);
             if ($auth) {
-                $this->setUser($user, $jwt);
+                $this->authentication_service->setUser($user, $jwt);
                 return true;
             } else {
                 return false;
@@ -293,18 +333,27 @@ class APIController
     }
 
     /**
-     * @param $getUser
-     * @param $login_credential
-     * @return void
+     * @throws ApiException
      */
-    public function setUser($user, $jwt)
+    private function refreshJWT($data): string
     {
-        $sessionData = array(
-            'name' => $user->name,
-            'auth_user' => $jwt->id,
-            'auth_merchant' => $jwt->merchant_key,
-            'logged_in' => true,
-        );
-        $this->session->set($sessionData);
+        $issuedAtTime = time();
+        $tokenTimeToLive = $this->ttl;
+        $tokenExpiration = $issuedAtTime + $tokenTimeToLive;
+        $jwt_id = session()->get('auth_user');
+        $jwt = JWT::find($jwt_id);
+        if (!$jwt) {
+            throw new ApiException("Access denied. Invalid or expired token!");
+        }
+        $payload = [
+            'user' => $jwt->user,
+            'login_credential' => $jwt->id,
+            'iat' => $issuedAtTime,
+            'exp' => $tokenExpiration,
+        ];
+        //update jwt
+        $token = $this->generate_jwt($issuedAtTime, $payload, $this->secret);
+        $jwt->update(['payload' => json_encode($payload), 'token' => $token]);
+        return $token;
     }
 }
