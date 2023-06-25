@@ -39,7 +39,7 @@ class APIController
         $useCaching = _env('APP_ENV')== 'production';
 
         // Load repositories from cache or scan the directory
-        $repositories = $useCaching ? $this->loadRepositoriesFromCache() : $this->scanRepositoriesDirectory();
+        $repositories =  $this->scanRepositoriesDirectory();//$useCaching ? $this->loadRepositoriesFromCache() :
 
         // Bind repository methods to this class
         foreach ($repositories as $repository) {
