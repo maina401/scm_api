@@ -1,6 +1,5 @@
 <?php
 namespace Leaf\Repositories;
-use Leaf\Helpers\ApiException;
 use Leaf\Helpers\Validator;
 use Leaf\Models\User;
 
