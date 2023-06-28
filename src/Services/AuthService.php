@@ -77,4 +77,20 @@ class AuthService
         }
         return true;
     }
+    /**
+     * @param $user
+     * @param $jwt
+     * @return void
+     */
+    public function setUser($user, $jwt): void
+    {
+        $sessionData = array(
+            'name' => $user->name,
+            'auth_user' => $jwt->id,
+            'user_id' => $user->id,
+            'auth_merchant' => $jwt->merchant_key,
+            'logged_in' => true,
+        );
+        session()->set($sessionData);
+    }
 }
