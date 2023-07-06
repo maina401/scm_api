@@ -50,10 +50,14 @@ class item_events_repository
         ]);
         $item = User::find(session()->get('user_id'))->items()->findOrFail($data->item_id);
 
-        $item->events()->attach($data->event_id, ["value" => $data->value]);
+        $item=ItemEvent::create([
+            "item_id" => $item->id,
+            "event_id" => $data->event_id,
+            "value" => $data->value,
+            "meta" => $data->meta ?? null
+        ]);
         //return the item and its events
-        $item_events = $item->events()->get();
-        return $item_events->toArray();
+        return $item->toArray();
     }
 
     //update_item_event

@@ -14,6 +14,13 @@ class   ItemEvent extends Model
         'event_id' => 'string',
         'created_by' => 'string',
     ];
+    protected $fillable = [
+        'item_id',
+        'event_id',
+        'created_by',
+        'value',
+        "meta"
+    ];
     //belongs to user
     public function user(): BelongsTo
     {

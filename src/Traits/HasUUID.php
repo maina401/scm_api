@@ -11,6 +11,7 @@ trait HasUUID
     {
         static::creating(function ($model) {
             $model->id = (string) Str::uuid();
+            $model->created_by = session()->get('user_id');
         });
     }
 }
