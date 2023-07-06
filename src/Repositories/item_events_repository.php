@@ -20,17 +20,23 @@ class item_events_repository
             'item_id' => 'required|uuid',
         ]);
         $item = User::find(session()->get('user_id'))->items()->findOrFail($data->item_id);
-        //$item_id = (string) $item->id;
         $item_events = ItemEvent::where("item_id", $item->id)
             ->get([
                 "id",
                 "item_id",
                 "event_id",
+                "value",
             ]);
-        $item_events = Event::whereIn("id", $item_events->pluck("event_id")->toArray())->get();
+        $events = Event::whereIn("id", $item_events->pluck("event_id")->toArray())->get();
+
+
+        //merge item_events with its value from
+        foreach ($events as $event) {
+            $event->value = $item_events->where("event_id", $event->id)->first()->value;
+        }
         return [
             "item" => $item->toArray(),
-            "events" => $item_events->toArray()
+            "events" => $events->toArray()
         ];
     }
 
