@@ -11,7 +11,10 @@ trait HasUUID
     {
         static::creating(function ($model) {
             $model->id = (string) Str::uuid();
-            $model->created_by = session()->get('user_id');
+            //if model has created by field, set it to current user id
+            if (in_array('created_by', $model->fillable)) {
+                $model->created_by = session()->get('user_id');
+            }
         });
     }
 }
